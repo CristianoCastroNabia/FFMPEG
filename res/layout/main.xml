@@ -4,6 +4,12 @@
     android:layout_width="fill_parent"
     android:layout_height="fill_parent"
     >
-    <Button android:layout_width="fill_parent" android:text="Button" android:layout_height="50px" android:id="@+id/RecordButton"></Button>
-<SurfaceView android:id="@+id/CameraView" android:layout_width="fill_parent" android:layout_height="fill_parent"></SurfaceView>
+    <Button android:layout_width="fill_parent" android:text="Button" android:layout_height="100px" android:id="@+id/RecordButton"></Button>
+
+    <SurfaceView
+        android:id="@+id/CameraView"
+        android:layout_width="540px"
+        android:layout_height="540px"
+        android:layout_gravity="center" />
+
 </LinearLayout>
