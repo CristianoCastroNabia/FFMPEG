@@ -11,7 +11,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.text.DecimalFormat;
 import java.text.NumberFormat;
@@ -48,6 +47,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	private FileChannel mFrameBufferFileChannel = null;
 	private String mAssetDirectory = "/data/data/com.mobvcasting.mjpegffmpeg/";
 	private String mCacheDirectory = null;
+	private String mJPEGBasePath = null;
 	
 	private MJPEGCameraProcessVideo mProcessVideo = null;
 	
@@ -82,12 +82,18 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	private MJPEGCameraRecordProgressListener mRecordProgressListener = null;
 	private MJPEGCameraProcessMovieProgressListener mProcessMovieProgressListener = null;
 	
+	private NumberFormat mFileCountFormatter = null;
+	private Rect mImageRect = null;
+	private BufferedOutputStream[] mJPEGOutputStreams = null;
+	private File[] mJPEGFiles = null;
+	
 	public MJPEGCamera(Context context, SurfaceView surfaceView, MJPEGCameraRecordProgressListener recordProgressListener, MJPEGCameraProcessMovieProgressListener processMovieProgressListener) {
 		super();
 		mContext = context;
 		mCacheDirectory = Environment.getExternalStorageDirectory().getPath() + "/com.mobvcasting.mjpegffmpeg/";
 		mRecordProgressListener = recordProgressListener;
 		mProcessMovieProgressListener = processMovieProgressListener;
+		mFileCountFormatter = new DecimalFormat("00000");
 		
 		moveAssetsIfNeeded();
 		setupFFMpegPermissions();
@@ -194,9 +200,15 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				mCameraParameters.setPreviewSize(mDesiredWidth, mDesiredHeight);
 				mCameraParameters.setPreviewFrameRate(mDesiredFPS);
 				//TODO: add setting for this
-				mCameraParameters.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
+				//Log.v(LOGTAG, "Focus "+mCameraParameters.getFocusMode()+" WB "+mCameraParameters.getWhiteBalance()+" scene "+mCameraParameters.getSceneMode());
+				//mCameraParameters.setFocusMode(Camera.Parameters.FOCUS_MODE_FIXED);
 				
-				mCamera.setParameters(mCameraParameters);
+				try {
+					mCamera.setParameters(mCameraParameters);
+				}
+				catch(Exception e){
+					e.printStackTrace();
+				}
 						
 				Log.d(LOGTAG, "parameters Width " + mCameraParameters.getPreviewSize().width);
 				Log.d(LOGTAG, "parameters Height " + mCameraParameters.getPreviewSize().height);
@@ -223,6 +235,8 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
+		        
+		        mImageRect = new Rect(0,0,mDesiredWidth,mDesiredHeight);
 
 				Log.v(LOGTAG,"setPreviewCallbackWithBuffer");
 				
@@ -242,6 +256,8 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	            }
 				
 				mCamera.setPreviewDisplay(holder);
+				
+				mJPEGBasePath = mCacheDirectory + "frame_";
 
 				Log.v(LOGTAG,"startPreview");
 				mCamera.startPreview();
@@ -286,8 +302,31 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		if (mRecording) {
 			Log.v(LOGTAG,"Started Writing Frame");
 			
+			int previewFormat = mCameraParameters.getPreviewFormat();
+			Size size = mCameraParameters.getPreviewSize();
+			Rect r = mImageRect;
+			
 			try {
-				mFrameBufferFileChannel.write(ByteBuffer.wrap(b));
+				
+				Log.v(LOGTAG,"In try");
+				BufferedOutputStream bos = mJPEGOutputStreams[mFrameCount];
+				Log.v(LOGTAG,"Creating yuv image");
+				YuvImage im = new YuvImage(b, previewFormat, size.width,size.height, null);
+				Log.v(LOGTAG,"compressing to jpeg on disk");
+				
+				im.compressToJpeg(r, 90, bos);
+				//Log.v(LOGTAG,"Closing output stream");
+				//bos.flush();
+				//bos.close();
+				//mJPEGOutputStreams[mFrameCount] = null;
+				
+				mJPEGFiles[mFrameCount] = null;
+				
+				
+				//mFrameBufferFileChannel.write(ByteBuffer.wrap(b));
+				
+				
+				
 				Log.v(LOGTAG,"Finished Writing Frame");
 			} catch (Exception e) {
 				Log.e(LOGTAG, "Failed to write frame "+mFrameCount);
@@ -318,11 +357,26 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	public void prepare(/* settings */){
 		//clear previous data (image buffers, etc..)
 		//set settings
+		
+		mMaxFrames = mMaxRecordingDurationInSeconds * mCameraParameters.getPreviewFrameRate();
+		try {
+			mJPEGOutputStreams = new BufferedOutputStream[mMaxFrames];
+			mJPEGFiles = new File[mMaxFrames];
+			for(int i = 0; i < mMaxFrames; i++){
+				File jpegFile = new File(mJPEGBasePath + mFileCountFormatter.format(i) + ".jpg");
+				jpegFile.delete();
+				jpegFile.createNewFile();
+				mJPEGFiles[i] = jpegFile;
+				mJPEGOutputStreams[i] = new BufferedOutputStream(new FileOutputStream(jpegFile));
+			}
+		} catch(Exception e){
+			e.printStackTrace();
+		}
 	}
 	
 	public void startRecording() {
 		if(!mRecording){
-			mMaxFrames = mMaxRecordingDurationInSeconds * mCameraParameters.getPreviewFrameRate();
+			prepare();
 			mFrameCount = 0;
 			if(null!=mRecordProgressListener){
 				mRecordProgressListener.recordingTimeChanged(0, mMaxFrames, 0.0f);
@@ -345,25 +399,63 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	public void endRecording() {
 		if(mRecording){
 			mRecording = false;
+
 			try {
 				mFrameBufferFileChannel.force(false);
 			} catch (IOException e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
-			} finally {
+			}
+			try {
+				mFrameBufferFileOutputStream.flush();
+			} catch (IOException e1) {
+				// TODO Auto-generated catch block
+				e1.printStackTrace();
+			}
+			
+			try {
+				mFrameBufferFileOutputStream.close();
+			} catch (IOException e1) {
+				// TODO Auto-generated catch block
+				e1.printStackTrace();
+			}
+			try {
+				mFrameBufferFileChannel.close();
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			
+			for(int i = 0; i < mMaxFrames; i++){
+				BufferedOutputStream bos = mJPEGOutputStreams[i];
 				try {
-					mFrameBufferFileChannel.close();
+					bos.flush();
 				} catch (IOException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
+				try {
+					bos.close();
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+				bos = null;
+				mJPEGOutputStreams[i]=null;
+				
+				if(null!=mJPEGFiles[i]){
+					mJPEGFiles[i].delete();
+					mJPEGFiles[i] = null;
+				}
 			}
+			mJPEGOutputStreams = null;
+			mJPEGFiles = null;
 		}
 	}
 	
 	public void processMovieToFile(String outFile, String audioFileToAppend){
 		//don't forget to clean files after use
-		mProcessVideo = new MJPEGCameraProcessVideo(this, outFile, audioFileToAppend);
+		mProcessVideo = new MJPEGCameraProcessVideo(this, outFile, audioFileToAppend,true);
 		mProcessVideo.execute();
 	} 
 	
@@ -400,14 +492,16 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		private String mOutFile = null, mAudioFile = null;
 		private NumberFormat mFileCountFormatter = null;
 		private int mCompressionQuality = 90;
+		private boolean mJPEGFilesAlreadyExist = false;
 		
-		public MJPEGCameraProcessVideo(MJPEGCamera camera, String outFile, String audioFile){
+		public MJPEGCameraProcessVideo(MJPEGCamera camera, String outFile, String audioFile, boolean jpegFilesAlreadyExist){
 			super();
 			mCamera = camera;
 			mListener = camera.mProcessMovieProgressListener;
 			mFileCountFormatter = new DecimalFormat("00000");
 			mOutFile = outFile;
 			mAudioFile = audioFile;
+			mJPEGFilesAlreadyExist = jpegFilesAlreadyExist;
 		}
 		
 		@Override
@@ -452,70 +546,76 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 			Camera.Parameters camParams = mCamera.mCameraParameters;
 			int frameCount = mCamera.mFrameCount-1;
 			
-			try {
-				fis = new FileInputStream(inputFile);
-				bis = new BufferedInputStream(fis);
-				int bufferSize = mCamera.mBufferSize;
-				byte[] buffer = new byte[bufferSize];
-				int i = 0;
-				int bRead = 0;
-				
-				int previewFormat = camParams.getPreviewFormat();
-				Size size = camParams.getPreviewSize();
-				Rect r = new Rect(0,0,size.width,size.height);
-				int compressionQuality = mCompressionQuality;
-				while((bRead = bis.read(buffer, 0, bufferSize))>0){
-					Log.v(LOGTAG,"Read "+bRead + " bytes from buffer file ("+i+"/"+frameCount+")");
-					formattedFileCount = fileCountFormatter.format(i); 
-					jpegFile = new File(basePath + formattedFileCount + ".jpg");
-					fos = new FileOutputStream(jpegFile);
-					YuvImage im = new YuvImage(buffer, previewFormat, size.width,size.height, null);
-					im.compressToJpeg(r, compressionQuality, fos);
-					fos.flush();
-					fos.close();
-					if(null!=mListener){
-						mListener.rawImageToJPEGProgressUpdate((float)i/frameCount, i, frameCount);
-					}
-					i++;
-				}
-			} catch (FileNotFoundException e2) {
-				// TODO Auto-generated catch block
-				e2.printStackTrace();
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			} finally {
-				if(null!=fos){
-					try {
+			if(!mJPEGFilesAlreadyExist){
+				try {
+					fis = new FileInputStream(inputFile);
+					bis = new BufferedInputStream(fis);
+					int bufferSize = mCamera.mBufferSize;
+					byte[] buffer = new byte[bufferSize];
+					int i = 0;
+					int bRead = 0;
+					
+					int previewFormat = camParams.getPreviewFormat();
+					Size size = camParams.getPreviewSize();
+					Rect r = new Rect(0,0,size.width,size.height);
+					int compressionQuality = mCompressionQuality;
+					while((bRead = bis.read(buffer, 0, bufferSize))>0){
+						Log.v(LOGTAG,"Read "+bRead + " bytes from buffer file ("+i+"/"+frameCount+")");
+						formattedFileCount = fileCountFormatter.format(i); 
+						jpegFile = new File(basePath + formattedFileCount + ".jpg");
+						fos = new FileOutputStream(jpegFile);
+						Log.v(LOGTAG,"Creating yuv image");
+						YuvImage im = new YuvImage(buffer, previewFormat, size.width,size.height, null);
+						Log.v(LOGTAG,"compressing to jpeg on disk");
+						im.compressToJpeg(r, compressionQuality, fos);
 						fos.flush();
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-					try {
 						fos.close();
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
+						Log.v(LOGTAG,"written image");
+						if(null!=mListener){
+							mListener.rawImageToJPEGProgressUpdate((float)i/frameCount, i, frameCount);
+						}
+						i++;
 					}
-				}
-				if(null!=bis){
-					try {
-						bis.close();
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
+				} catch (FileNotFoundException e2) {
+					// TODO Auto-generated catch block
+					e2.printStackTrace();
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				} finally {
+					if(null!=fos){
+						try {
+							fos.flush();
+						} catch (IOException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+						try {
+							fos.close();
+						} catch (IOException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
 					}
-				}
-				if(null!=fis){
-					try {
-						fis.close();
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
+					if(null!=bis){
+						try {
+							bis.close();
+						} catch (IOException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+					}
+					if(null!=fis){
+						try {
+							fis.close();
+						} catch (IOException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
 					}
 				}
 			}
+			
 			inputFile.delete();
 			inputFile = null;
 			/*
