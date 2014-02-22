@@ -16,7 +16,9 @@ import java.text.DecimalFormat;
 import java.text.NumberFormat;
 import java.util.Iterator;
 import java.util.List;
-
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.AssetManager;
 import android.graphics.ImageFormat;
@@ -25,7 +27,10 @@ import android.graphics.YuvImage;
 import android.hardware.Camera;
 import android.hardware.Camera.Size;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -42,9 +47,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	private int mDesiredWidth, mDesiredHeight, mDesiredFPS, mBufferSize = 0, mFrameCount = 0, mMaxFrames = 0;
 	//values for variable amount of buffers
 	private int mMaxBuffersSize = 5 * 1024 * 1024 /* 5 MB */, mMinBuffers = 2, mMaxBuffers = 5;
-	private File mFrameBufferFile = null;
-	private FileOutputStream mFrameBufferFileOutputStream = null;
-	private FileChannel mFrameBufferFileChannel = null;
+
 	private String mAssetDirectory = "/data/data/com.mobvcasting.mjpegffmpeg/";
 	private String mCacheDirectory = null;
 	private String mJPEGBasePath = null;
@@ -86,6 +89,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	private Rect mImageRect = null;
 	private BufferedOutputStream[] mJPEGOutputStreams = null;
 	private File[] mJPEGFiles = null;
+	private BufferedOutputStream mFFMpegStream = null;
 	
 	public MJPEGCamera(Context context, SurfaceView surfaceView, MJPEGCameraParameters cameraParameters, MJPEGCameraRecordProgressListener recordProgressListener, MJPEGCameraProcessMovieProgressListener processMovieProgressListener) {
 		super();
@@ -199,11 +203,85 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
         }
 	}
 	
+	@SuppressLint("NewApi")
+	private int[] checkBestSuitedFPSRange(){
+		int[] bestSuited = null;
+		int minDesired = mDesiredFPS*1000;
+		int maxDesired = minDesired;
+		for(int[] ranges : mCameraParameters.getSupportedPreviewFpsRange()){
+			if(null==bestSuited){
+				bestSuited = ranges;
+			}
+			else {
+				int minR = ranges[0];
+				int maxR = ranges[1];
+				//if its the range we are looking for then set it and exit loop
+				if(minR==minDesired && maxR==maxDesired){
+					bestSuited = ranges;
+					break;
+				}
+				else {
+					int minOld = bestSuited[0];
+					int maxOld = bestSuited[1];
+					
+					//otherwise try the one with range more close to ours
+					if(minR >= minDesired){
+						//if the max is ok...
+						if(maxR >= maxDesired){
+							//...but previous wasn't...
+							if(maxOld < maxDesired){
+								bestSuited = ranges;
+							}
+							else {
+								//...or of we are closer to what we want
+								if(maxR < maxOld){
+									bestSuited = ranges;
+								}
+							}
+						}
+						else {
+							//we only have a change of being better if previos max wasn't ok...
+							if(maxOld < maxDesired){
+								//...and we are closer
+								if(maxR>maxOld){
+									bestSuited = ranges;
+								}
+							}
+						}
+					}
+					else {
+						
+						//if the minimum is greater than what we had use this range
+						if(minR>minOld){
+							bestSuited = ranges;
+						}
+						//otherwise only use it if minimum is at least what we had...
+						else if(minR==minOld){
+							//...if so, then this is best suited than before if:
+							//1 - the max is what we want
+							//2 - the max is greater than what we want but previous max wasn't
+							//3 - the max is greater than what we want but closer that previous max
+							//4 - the max is lower than what we want but greater than previous one
+							if((maxR == maxDesired)
+								||(maxR > maxDesired && maxOld < maxDesired)
+								||(maxR > maxDesired && maxR < maxOld)
+								||(maxR < maxDesired && maxR > maxOld)){
+								bestSuited = ranges;
+							}
+						}
+					}
+				}
+			}
+		}
+		return bestSuited;
+	}
+	
 	public void surfaceCreated(SurfaceHolder holder) {
 		mCamera = Camera.open();
 	}
-
-	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+	
+	@SuppressLint("NewApi")
+	public void surfaceChanged(final SurfaceHolder holder, int format, int width, int height) {
 		if (!mRecording) {
 			if (mPreviewRunning){
 				mCamera.stopPreview();
@@ -216,6 +294,27 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				//TODO: add setting for this
 				//Log.v(LOGTAG, "Focus "+mCameraParameters.getFocusMode()+" WB "+mCameraParameters.getWhiteBalance()+" scene "+mCameraParameters.getSceneMode());
 				//mCameraParameters.setFocusMode(Camera.Parameters.FOCUS_MODE_FIXED);
+				
+				
+				if (Build.VERSION.SDK_INT >= 9) {
+					mCameraParameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
+					int[] bestFPSRange = checkBestSuitedFPSRange();
+					if(null!=bestFPSRange){
+						mCameraParameters.setPreviewFpsRange(mDesiredFPS*1000,mDesiredFPS*1000);//bestFPSRange[0], bestFPSRange[1]);
+					}
+				}
+				if (Build.VERSION.SDK_INT >= 14) {
+					mCameraParameters.setRecordingHint(true);
+					/*
+					if(mCameraParameters.isAutoWhiteBalanceLockSupported()){
+						mCameraParameters.setAutoWhiteBalanceLock(true);
+					}
+					if(mCameraParameters.isAutoExposureLockSupported()){
+						mCameraParameters.setAutoExposureLock(true);
+					}
+					*/
+				}
+				
 				
 				try {
 					mCamera.setParameters(mCameraParameters);
@@ -232,24 +331,6 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				mBufferSize = (mCameraParameters.getPreviewSize().width * mCameraParameters.getPreviewSize().height * ImageFormat.getBitsPerPixel(mCameraParameters.getPreviewFormat()) / 8);
 				Log.d(LOGTAG, "bufferSize = " + mBufferSize);		
 				
-		        try {
-		        	//delete any previous frame buffer if exists and create a new empty one
-		        	mFrameBufferFile = new File(getFrameBufferFileName());
-		        	mFrameBufferFile.delete();
-		        	mFrameBufferFile.createNewFile();
-		        	mFrameBufferFileOutputStream = new FileOutputStream(mFrameBufferFile);
-		        	mFrameBufferFileChannel = mFrameBufferFileOutputStream.getChannel();
-				} catch (FileNotFoundException e1) {
-					// TODO Auto-generated catch block
-					e1.printStackTrace();
-				} catch (IOException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} catch (Exception e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				}
-		        
 		        mImageRect = new Rect(0,0,mDesiredWidth,mDesiredHeight);
 
 				Log.v(LOGTAG,"setPreviewCallbackWithBuffer");
@@ -263,7 +344,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				else if(nBuffers > mMaxBuffers){
 					nBuffers = mMaxBuffers;
 				}
-				
+
 				for (int i = 0; i < nBuffers; i++) {
 	                byte [] cameraBuffer = new byte[mBufferSize];
 	                mCamera.addCallbackBuffer(cameraBuffer);
@@ -281,6 +362,11 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				Log.e(LOGTAG,e.getMessage());
 				e.printStackTrace();
 			}	
+			
+			//TODO: testing ffmpeg stdin
+			String outFile = Environment.getExternalStorageDirectory().getPath() + "/com.mobvcasting.mjpegffmpeg/video.mp4";
+	    	processMovieToFile(outFile, null);
+			
 		}
 	}
 
@@ -305,61 +391,66 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		}
 		return false;
 	}
-	
-	public void onPreviewFrame(byte[] b, Camera c) {
 
+	public void onPreviewFrame(byte[] b, Camera c) {
+		
 		//check if we have reached max frames (we will check again after writing one)
-		if (checkIfMaxRecordReached()){
-			return;
-		}
-			
-		if (mRecording) {
-			Log.v(LOGTAG,"Started Writing Frame");
-			
-			int previewFormat = mCameraParameters.getPreviewFormat();
-			Size size = mCameraParameters.getPreviewSize();
-			Rect r = mImageRect;
-			
-			try {
+				if (checkIfMaxRecordReached()){
+					return;
+				}
+					
+				if (mRecording) {
+					Log.v(LOGTAG,"Started Writing Frame");
+					
+					int previewFormat = mCameraParameters.getPreviewFormat();
+					Size size = mCameraParameters.getPreviewSize();
+					Rect r = mImageRect;
+					
+					try {
+						
+						boolean useFFMpegStream = (mFFMpegStream!=null);
+						BufferedOutputStream bos = (useFFMpegStream?mFFMpegStream:mJPEGOutputStreams[mFrameCount]);
+						Log.v(LOGTAG,"Creating yuv image");
+						YuvImage im = new YuvImage(b, previewFormat, size.width,size.height, null);
+						Log.v(LOGTAG,"compressing to jpeg on "+(useFFMpegStream?"memory":"disk"));
+						
+						im.compressToJpeg(r, 90, bos);
+						//Log.v(LOGTAG,"Closing output stream");
+						//bos.flush();
+						//bos.close();
+						//mJPEGOutputStreams[mFrameCount] = null;
+						
+						if(!useFFMpegStream){
+							mJPEGFiles[mFrameCount] = null;
+						}
+						
+						
+						//mFrameBufferFileChannel.write(ByteBuffer.wrap(b));
+						
+						
+						
+						Log.v(LOGTAG,"Finished Writing Frame");
+					} catch (Exception e) {
+						Log.e(LOGTAG, "Failed to write frame "+mFrameCount);
+						e.printStackTrace();
+						//ffmpeg stdin test
+						endRecording();
+					}
+					mFrameCount++;
+					
+					if(null!=mRecordProgressListener){
+						mRecordProgressListener.recordingTimeChanged(mFrameCount, mMaxFrames, (float)(mFrameCount*mMaxRecordingDurationInSeconds)/(float)mMaxFrames);
+					}
+				}
+				mCamera.addCallbackBuffer(b);
 				
-				Log.v(LOGTAG,"In try");
-				BufferedOutputStream bos = mJPEGOutputStreams[mFrameCount];
-				Log.v(LOGTAG,"Creating yuv image");
-				YuvImage im = new YuvImage(b, previewFormat, size.width,size.height, null);
-				Log.v(LOGTAG,"compressing to jpeg on disk");
-				
-				im.compressToJpeg(r, 90, bos);
-				//Log.v(LOGTAG,"Closing output stream");
-				//bos.flush();
-				//bos.close();
-				//mJPEGOutputStreams[mFrameCount] = null;
-				
-				mJPEGFiles[mFrameCount] = null;
-				
-				
-				//mFrameBufferFileChannel.write(ByteBuffer.wrap(b));
-				
-				
-				
-				Log.v(LOGTAG,"Finished Writing Frame");
-			} catch (Exception e) {
-				Log.e(LOGTAG, "Failed to write frame "+mFrameCount);
-				e.printStackTrace();
-			}
-			mFrameCount++;
-			
-			if(null!=mRecordProgressListener){
-				mRecordProgressListener.recordingTimeChanged(mFrameCount, mMaxFrames, (float)(mFrameCount*mMaxRecordingDurationInSeconds)/(float)mMaxFrames);
-			}
-		}
+				//check if we have reached max frames: we checked above but we check here too
+				//we want to finish here but checking above ensures that even if this callback is called after we finish we don't write it again
+				if (checkIfMaxRecordReached()){
+					return;
+				}
+		
 		mCamera.addCallbackBuffer(b);
-		
-		//check if we have reached max frames: we checked above but we check here too
-		//we want to finish here but checking above ensures that even if this callback is called after we finish we don't write it again
-		if (checkIfMaxRecordReached()){
-			return;
-		}
-		
 	}
 	
 	public boolean canRecord(/* settings */){
@@ -375,18 +466,27 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		}
 		
 		mMaxFrames = mMaxRecordingDurationInSeconds * mCameraParameters.getPreviewFrameRate();
-		try {
-			mJPEGOutputStreams = new BufferedOutputStream[mMaxFrames];
-			mJPEGFiles = new File[mMaxFrames];
-			for(int i = 0; i < mMaxFrames; i++){
-				File jpegFile = new File(mJPEGBasePath + mFileCountFormatter.format(i) + ".jpg");
-				jpegFile.delete();
-				jpegFile.createNewFile();
-				mJPEGFiles[i] = jpegFile;
-				mJPEGOutputStreams[i] = new BufferedOutputStream(new FileOutputStream(jpegFile));
+
+		if(null!=mProcessVideo){
+			mFFMpegStream = new BufferedOutputStream(mProcessVideo.ffmpegProcess.getOutputStream());
+			mJPEGOutputStreams = null;
+			mJPEGFiles = null;
+		}
+		else {
+			mFFMpegStream = null;
+			try {
+				mJPEGOutputStreams = new BufferedOutputStream[mMaxFrames];
+				mJPEGFiles = new File[mMaxFrames];
+				for(int i = 0; i < mMaxFrames; i++){
+					File jpegFile = new File(mJPEGBasePath + mFileCountFormatter.format(i) + ".jpg");
+					jpegFile.delete();
+					jpegFile.createNewFile();
+					mJPEGFiles[i] = jpegFile;
+					mJPEGOutputStreams[i] = new BufferedOutputStream(new FileOutputStream(jpegFile));
+				}
+			} catch(Exception e){
+				e.printStackTrace();
 			}
-		} catch(Exception e){
-			e.printStackTrace();
 		}
 	}
 	
@@ -420,64 +520,59 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 			mPrepared = false;
 			mCamera.stopPreview();
 			mPreviewRunning = false;
-
-			try {
-				mFrameBufferFileChannel.force(false);
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-			try {
-				mFrameBufferFileOutputStream.flush();
-			} catch (IOException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-			}
 			
-			try {
-				mFrameBufferFileOutputStream.close();
-			} catch (IOException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-			}
-			try {
-				mFrameBufferFileChannel.close();
-			} catch (IOException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-			
-			for(int i = 0; i < mMaxFrames; i++){
-				BufferedOutputStream bos = mJPEGOutputStreams[i];
+			if(null!=mFFMpegStream){
 				try {
-					bos.flush();
+					mFFMpegStream.flush();
 				} catch (IOException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
 				try {
-					bos.close();
+					mFFMpegStream.close();
 				} catch (IOException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
-				bos = null;
-				mJPEGOutputStreams[i]=null;
+				mFFMpegStream = null;
 				
-				if(null!=mJPEGFiles[i]){
-					mJPEGFiles[i].delete();
-					mJPEGFiles[i] = null;
-				}
 			}
-			mJPEGOutputStreams = null;
-			mJPEGFiles = null;
+			else {
+				for(int i = 0; i < mMaxFrames; i++){
+					BufferedOutputStream bos = mJPEGOutputStreams[i];
+					try {
+						bos.flush();
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					try {
+						bos.close();
+					} catch (IOException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					bos = null;
+					mJPEGOutputStreams[i]=null;
+					
+					if(null!=mJPEGFiles[i]){
+						mJPEGFiles[i].delete();
+						mJPEGFiles[i] = null;
+					}
+				}
+				mJPEGOutputStreams = null;
+				mJPEGFiles = null;
+			}
+
 		}
 	}
 	
 	public void processMovieToFile(String outFile, String audioFileToAppend){
-		//don't forget to clean files after use
-		mProcessVideo = new MJPEGCameraProcessVideo(this, outFile, audioFileToAppend,true);
-		mProcessVideo.execute();
+		//TODO: testing ffmpeg stdin
+		if(null==mProcessVideo){
+			mProcessVideo = new MJPEGCameraProcessVideo(this, outFile, audioFileToAppend);
+			mProcessVideo.execute();
+		}
 	} 
 	
 	static public class MJPEGCameraParameters {
@@ -521,27 +616,25 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		private MJPEGCamera mCamera = null;
 		private MJPEGCameraProcessMovieProgressListener mListener = null;
 		private String mOutFile = null, mAudioFile = null;
-		private NumberFormat mFileCountFormatter = null;
-		private int mCompressionQuality = 90;
-		private boolean mJPEGFilesAlreadyExist = false;
+		public Process ffmpegProcess = null;
 		
-		public MJPEGCameraProcessVideo(MJPEGCamera camera, String outFile, String audioFile, boolean jpegFilesAlreadyExist){
+		public MJPEGCameraProcessVideo(MJPEGCamera camera, String outFile, String audioFile){
 			super();
 			mCamera = camera;
 			mListener = camera.mProcessMovieProgressListener;
-			mFileCountFormatter = new DecimalFormat("00000");
 			mOutFile = outFile;
 			mAudioFile = audioFile;
-			mJPEGFilesAlreadyExist = jpegFilesAlreadyExist;
 		}
 		
 		@Override
 		protected void onPreExecute() {
 			// TODO Auto-generated method stub
 			super.onPreExecute();
+			/*
 			if(null!=mListener){
 				mListener.startedProcessingMovie();
 			}
+			*/
 		}
 		
 		@Override
@@ -554,144 +647,11 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		
 		@Override
 		protected Void doInBackground(Void ... params) {
-			
-			//TODO: why the sleep?
-			try {
-				Thread.sleep(1000);
-			} catch (InterruptedException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-			}
-			
 
-			File jpegFile = null;
-			String formattedFileCount = null;
-			FileOutputStream fos = null;
-			
-			File inputFile = mCamera.mFrameBufferFile;
-			FileInputStream fis = null;
-			BufferedInputStream bis = null;
-			
-			NumberFormat fileCountFormatter = mFileCountFormatter;
-			String basePath = mCamera.mCacheDirectory + "frame_";
 			Camera.Parameters camParams = mCamera.mCameraParameters;
-			int frameCount = mCamera.mFrameCount-1;
-			
-			if(!mJPEGFilesAlreadyExist){
-				try {
-					fis = new FileInputStream(inputFile);
-					bis = new BufferedInputStream(fis);
-					int bufferSize = mCamera.mBufferSize;
-					byte[] buffer = new byte[bufferSize];
-					int i = 0;
-					int bRead = 0;
-					
-					int previewFormat = camParams.getPreviewFormat();
-					Size size = camParams.getPreviewSize();
-					Rect r = new Rect(0,0,size.width,size.height);
-					int compressionQuality = mCompressionQuality;
-					while((bRead = bis.read(buffer, 0, bufferSize))>0){
-						Log.v(LOGTAG,"Read "+bRead + " bytes from buffer file ("+i+"/"+frameCount+")");
-						formattedFileCount = fileCountFormatter.format(i); 
-						jpegFile = new File(basePath + formattedFileCount + ".jpg");
-						fos = new FileOutputStream(jpegFile);
-						Log.v(LOGTAG,"Creating yuv image");
-						YuvImage im = new YuvImage(buffer, previewFormat, size.width,size.height, null);
-						Log.v(LOGTAG,"compressing to jpeg on disk");
-						im.compressToJpeg(r, compressionQuality, fos);
-						fos.flush();
-						fos.close();
-						Log.v(LOGTAG,"written image");
-						if(null!=mListener){
-							mListener.rawImageToJPEGProgressUpdate((float)i/frameCount, i, frameCount);
-						}
-						i++;
-					}
-				} catch (FileNotFoundException e2) {
-					// TODO Auto-generated catch block
-					e2.printStackTrace();
-				} catch (IOException e) {
-					// TODO Auto-generated catch block
-					e.printStackTrace();
-				} finally {
-					if(null!=fos){
-						try {
-							fos.flush();
-						} catch (IOException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
-						}
-						try {
-							fos.close();
-						} catch (IOException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
-						}
-					}
-					if(null!=bis){
-						try {
-							bis.close();
-						} catch (IOException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
-						}
-					}
-					if(null!=fis){
-						try {
-							fis.close();
-						} catch (IOException e) {
-							// TODO Auto-generated catch block
-							e.printStackTrace();
-						}
-					}
-				}
-			}
-			
-			inputFile.delete();
-			inputFile = null;
-			/*
-			for( int i = 0; i < FRAMES; i++){
-				try{
-					formattedFileCount = fileCountFormatter2.format(i);  
-					bFile = new File(Environment.getExternalStorageDirectory().getPath() + "/com.mobvcasting.mjpegffmpeg/frame_" + formattedFileCount + ".buf");
-					if (!bFile.exists()){
-//						Log.d("XXX", "File not found " + formattedFileCount);
-						continue;	
-					}
-					Log.d("XXX", "processing frame " + i);
 
-					
-					byte[] buffer = new byte[bufferSize];
-							
-					BufferedInputStream buf = new BufferedInputStream(new FileInputStream(bFile));
-					buf.read(buffer, 0, bufferSize);
-					
+	        ffmpegProcess = null;
 
-					jpegFile = new File(Environment.getExternalStorageDirectory().getPath() + "/com.mobvcasting.mjpegffmpeg/frame_" + formattedFileCount + ".jpg");
-					fos = new FileOutputStream(jpegFile);
-//					bos = new BufferedOutputStream(fos);
-					YuvImage im = new YuvImage(buffer, camera.getParameters().getPreviewFormat(), previewWidth, previewHeight, null);
-					Rect r = new Rect(0,0,previewWidth,previewHeight);//cropStartX, cropStartY, cropEndX, cropEndY);
-					im.compressToJpeg(r, 100, fos);
-					fos.flush();
-					fos.close();
-				}
-				catch (Exception e){
-					Log.e("YYY", "Could not save frame!");
-					e.printStackTrace();
-				}
-				
-			}
-			*/
-
-	        Process ffmpegProcess = null;
-	        //TODO: why sleep?
-	        try {
-				Thread.sleep(2000);
-			} catch (InterruptedException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-			}
 	        try {
 	        	
 	        	//ffmpeg -r 10 -b 1800 -i %03d.jpg test1800.mp4
@@ -707,14 +667,43 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	        	(new File(videoFile)).delete();
 	        	
 				//String[] args2 = {"/data/data/com.mobvcasting.ffmpegcommandlinetest/ffmpeg", "-y", "-i", "/data/data/com.mobvcasting.ffmpegcommandlinetest/", "-vcodec", "copy", "-acodec", "copy", "-f", "flv", "rtmp://192.168.43.176/live/thestream"};
-				String[] ffmpegCommand = {mCamera.mAssetDirectory+"ffmpeg", "-r", ""+camParams.getPreviewFrameRate(), 
+				/*
+	        	String[] ffmpegCommand = {mCamera.mAssetDirectory+"ffmpeg", "-r", ""+camParams.getPreviewFrameRate(), 
 										"-b", "" + 200000*8, "-vcodec", "mjpeg", 
 										"-i", mCamera.mCacheDirectory + "frame_%05d.jpg", 
 										videoFile};
+				*/
+
+	        	String[] ffmpegCommand = {mCamera.mAssetDirectory+"ffmpeg", 
+	        			"-f","image2pipe",
+	        			"-vcodec", "mjpeg", 
+	        			"-r", ""+camParams.getPreviewFrameRate(), 
+	        			"-s",""+camParams.getPreviewSize().width+"x"+camParams.getPreviewSize().height,
+	        			"-analyzeduration","0",
+	        			"-i","-",
+	        			
+						//"-f", "mp4",
+						"-vcodec", "mjpeg",
+						"-r", ""+camParams.getPreviewFrameRate(), 
+						"-b", "" + 200000*8, 
+						videoFile};
 				
 				
 				
 				ffmpegProcess = new ProcessBuilder(ffmpegCommand).redirectErrorStream(true).start();         	
+				
+				if(null!=mListener){
+					new Handler(Looper.getMainLooper()).post(new Runnable() {
+						
+						@Override
+						public void run() {
+							if(null!=mListener){
+								mListener.startedProcessingMovie();
+							}
+						}
+					});
+				}
+				
 				
 				//OutputStream ffmpegOutStream = ffmpegProcess.getOutputStream();
 				BufferedReader reader = new BufferedReader(new InputStreamReader(ffmpegProcess.getInputStream()));
@@ -726,9 +715,11 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				{
 					
 					//02-22 12:37:39.319: V/MJPEGCamera(4269): ***frame=  128 fps= 16 q=2.0 Lsize=     505kB time=4.27 bitrate= 969.1kbits/s    ***
+					
 					if(null!=mListener && line.startsWith("frame=")){
 						int fpsIdx = line.indexOf("fps=");
 						if(fpsIdx != -1){
+							int frameCount = mCamera.mFrameCount;
 							int frame = Math.min(Integer.parseInt(line.substring(6, fpsIdx-1).trim()),frameCount);
 							mListener.movieEncodeProgressUpdate((float)frame/frameCount, frame, frameCount);
 						}
@@ -736,6 +727,8 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 							Log.v(LOGTAG,"***"+line+"***");
 						}
 					}
+					
+					//Log.v(LOGTAG,"***"+line+"***");
 				}
 				Log.v(LOGTAG,"***Ending FFMPEG***");
 	
@@ -747,15 +740,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	        if (ffmpegProcess != null) {
 	        	ffmpegProcess.destroy();        
 	        }
-	        
-	        //clear the temporary jpeg frames
-	        while(frameCount>=0){
-				formattedFileCount = fileCountFormatter.format(frameCount); 
-				jpegFile = new File(basePath + formattedFileCount + ".jpg");
-				jpegFile.delete();
-				frameCount--;
-			}
-	        	        
+     
 	        return null;
 		}
 

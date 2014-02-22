@@ -24,8 +24,6 @@ public class MJPEGFFMPEGTest extends Activity implements OnClickListener, MJPEGC
 	public static final String LOGTAG = "MJPEG_FFMPEG";
 
 	
-	private int FRAMES = 300,DESIRED_WIDTH = 640,DESIRED_HEIGHT = 480;
-	
 	boolean recording = false;
 	boolean previewRunning = false;	
 	
@@ -57,7 +55,6 @@ public class MJPEGFFMPEGTest extends Activity implements OnClickListener, MJPEGC
 		SurfaceView cameraView = (SurfaceView) findViewById(R.id.CameraView);
 		
 		mjpegCam = new MJPEGCamera(this, cameraView, new MJPEGCamera.MJPEGCameraParameters(), this, this);
-
 
 		cameraView.setClickable(true);
 		cameraView.setOnClickListener(this);		
