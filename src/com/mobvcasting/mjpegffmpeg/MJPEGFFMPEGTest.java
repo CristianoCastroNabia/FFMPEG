@@ -15,6 +15,7 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.Toast;
 
+import com.mobvcasting.mjpegffmpeg.MJPEGCamera.MJPEGCameraParameters;
 import com.mobvcasting.mjpegffmpeg.MJPEGCamera.MJPEGCameraProcessMovieProgressListener;
 import com.mobvcasting.mjpegffmpeg.MJPEGCamera.MJPEGCameraRecordProgressListener;
 
@@ -55,7 +56,7 @@ public class MJPEGFFMPEGTest extends Activity implements OnClickListener, MJPEGC
 
 		SurfaceView cameraView = (SurfaceView) findViewById(R.id.CameraView);
 		
-		mjpegCam = new MJPEGCamera(this, cameraView, this, this);
+		mjpegCam = new MJPEGCamera(this, cameraView, new MJPEGCamera.MJPEGCameraParameters(), this, this);
 
 
 		cameraView.setClickable(true);

@@ -34,12 +34,12 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	
 	public static final String LOGTAG = "MJPEGCamera";
 	
-	public boolean mCanProcessFramesWhilePaused = true, mRecording = false, mPreviewRunning = false;
-	public int mMaxRecordingDurationInSeconds = 10;
+	public boolean mRecording = false, mPreviewRunning = false, mPrepared = false;
+	public int mMaxRecordingDurationInSeconds;
 	
 	private Camera mCamera = null;
 	private Camera.Parameters mCameraParameters = null;
-	private int mDesiredWidth = 640, mDesiredHeight = 480, mDesiredFPS = 30, mBufferSize = 0, mFrameCount = 0, mMaxFrames = 0;
+	private int mDesiredWidth, mDesiredHeight, mDesiredFPS, mBufferSize = 0, mFrameCount = 0, mMaxFrames = 0;
 	//values for variable amount of buffers
 	private int mMaxBuffersSize = 5 * 1024 * 1024 /* 5 MB */, mMinBuffers = 2, mMaxBuffers = 5;
 	private File mFrameBufferFile = null;
@@ -87,7 +87,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	private BufferedOutputStream[] mJPEGOutputStreams = null;
 	private File[] mJPEGFiles = null;
 	
-	public MJPEGCamera(Context context, SurfaceView surfaceView, MJPEGCameraRecordProgressListener recordProgressListener, MJPEGCameraProcessMovieProgressListener processMovieProgressListener) {
+	public MJPEGCamera(Context context, SurfaceView surfaceView, MJPEGCameraParameters cameraParameters, MJPEGCameraRecordProgressListener recordProgressListener, MJPEGCameraProcessMovieProgressListener processMovieProgressListener) {
 		super();
 		mContext = context;
 		mCacheDirectory = Environment.getExternalStorageDirectory().getPath() + "/com.mobvcasting.mjpegffmpeg/";
@@ -98,6 +98,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		moveAssetsIfNeeded();
 		setupFFMpegPermissions();
 		setupAndCleanCacheDir();
+		setDesiredParameters(cameraParameters);
 		
 		surfaceView.getHolder().addCallback(this);
 	}
@@ -162,6 +163,19 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	
 	private String getFrameBufferFileName() {
 		return mCacheDirectory + "frame_buffer.buf";
+	}
+	
+	private void setDesiredParameters(MJPEGCameraParameters params){
+		
+		//set default params if none given
+		if(null==params){
+			params = new MJPEGCameraParameters();
+		}
+		
+		mDesiredWidth = params.width;
+		mDesiredHeight = params.height;
+		mDesiredFPS = params.fps;
+		mMaxRecordingDurationInSeconds = params.maxDuration;
 	}
 	
 	//TODO: refactor/enhance this method
@@ -354,9 +368,11 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		return true;
 	}
 	
-	public void prepare(/* settings */){
-		//clear previous data (image buffers, etc..)
-		//set settings
+	public void prepare(){
+		
+		if(mPrepared){
+			return;
+		}
 		
 		mMaxFrames = mMaxRecordingDurationInSeconds * mCameraParameters.getPreviewFrameRate();
 		try {
@@ -376,7 +392,9 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	
 	public void startRecording() {
 		if(!mRecording){
-			prepare();
+			if(!mPrepared){
+				prepare();
+			}
 			mFrameCount = 0;
 			if(null!=mRecordProgressListener){
 				mRecordProgressListener.recordingTimeChanged(0, mMaxFrames, 0.0f);
@@ -399,6 +417,9 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	public void endRecording() {
 		if(mRecording){
 			mRecording = false;
+			mPrepared = false;
+			mCamera.stopPreview();
+			mPreviewRunning = false;
 
 			try {
 				mFrameBufferFileChannel.force(false);
@@ -458,6 +479,16 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		mProcessVideo = new MJPEGCameraProcessVideo(this, outFile, audioFileToAppend,true);
 		mProcessVideo.execute();
 	} 
+	
+	static public class MJPEGCameraParameters {
+		
+		public int width = 640, height = 480, fps = 30, maxDuration = 9;
+		
+		public MJPEGCameraParameters(){
+			super();
+		}
+		
+	}
 	
 	private class MJPEGCameraFileMover {
 
