@@ -455,9 +455,34 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		mCamera.addCallbackBuffer(b);
 	}
 	
-	public boolean canRecord(/* settings */){
+	public boolean canRecord(MJPEGCameraParameters params){
 		//check if the camera can record with the specified settings
 		//don't forget to check for free space
+		
+		//check for desired size availability
+		boolean desiredSizeExists = false;
+		for(Size size : mCameraParameters.getSupportedPreviewSizes()){
+			if(size.width == params.width && size.height == params.height){
+				desiredSizeExists = true;
+				break;
+			}
+		}
+		if(!desiredSizeExists){
+			return false;
+		}
+		
+		//check framerate
+		boolean desiredFrameRateOrSimilarExists = false;
+		int[] bestFPS = checkBestSuitedFPSRange();
+		//if min fps or max fps is at least our desired one we consider that we can record
+		if((null!=bestFPS)
+			&&(bestFPS[0]>=params.fps || bestFPS[1]>=params.fps)){
+			desiredFrameRateOrSimilarExists = true;
+		}
+		if(!desiredFrameRateOrSimilarExists){
+			return false;
+		}
+		
 		return true;
 	}
 	
@@ -678,7 +703,8 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 										videoFile};
 				*/
 
-	        	String[] ffmpegCommand = {mCamera.mAssetDirectory+"ffmpeg", 
+	        	String[] ffmpegCommand = {mCamera.mAssetDirectory+"ffmpeg",
+	        			"-y",//Ô-y (global)Õ: Overwrite output files without asking.
 	        			"-f","image2pipe",
 	        			"-vcodec", "mjpeg", 
 	        			"-r", ""+camParams.getPreviewFrameRate(), 
