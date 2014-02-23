@@ -40,7 +40,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	public static final String LOGTAG = "MJPEGCamera";
 	
 	public boolean mRecording = false, mPreviewRunning = false, mPrepared = false;
-	public int mMaxRecordingDurationInSeconds;
+	public int mMaxRecordingDurationInSeconds, mJpegQuality;
 	
 	private Camera mCamera = null;
 	private Camera.Parameters mCameraParameters = null;
@@ -180,6 +180,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 		mDesiredHeight = params.height;
 		mDesiredFPS = params.fps;
 		mMaxRecordingDurationInSeconds = params.maxDuration;
+		mJpegQuality = params.JpegQuality;
 	}
 	
 	//TODO: refactor/enhance this method
@@ -303,6 +304,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 						mCameraParameters.setPreviewFpsRange(mDesiredFPS*1000,mDesiredFPS*1000);//bestFPSRange[0], bestFPSRange[1]);
 					}
 				}
+				
 				if (Build.VERSION.SDK_INT >= 14) {
 					mCameraParameters.setRecordingHint(true);
 					/*
@@ -414,7 +416,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 						YuvImage im = new YuvImage(b, previewFormat, size.width,size.height, null);
 						Log.v(LOGTAG,"compressing to jpeg on "+(useFFMpegStream?"memory":"disk"));
 						
-						im.compressToJpeg(r, 90, bos);
+						im.compressToJpeg(r, mJpegQuality, bos);
 						//Log.v(LOGTAG,"Closing output stream");
 						//bos.flush();
 						//bos.close();
@@ -488,6 +490,8 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				e.printStackTrace();
 			}
 		}
+		
+		System.gc();
 	}
 	
 	public void startRecording() {
@@ -577,7 +581,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 	
 	static public class MJPEGCameraParameters {
 		
-		public int width = 640, height = 480, fps = 30, maxDuration = 9;
+		public int width = 640, height = 480, fps = 30, maxDuration = 9, JpegQuality = 80;
 		
 		public MJPEGCameraParameters(){
 			super();
@@ -685,7 +689,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 						//"-f", "mp4",
 						"-vcodec", "mjpeg",
 						"-r", ""+camParams.getPreviewFrameRate(), 
-						"-b", "" + 200000*8, 
+						//"-b", "" + 200000*8, 
 						videoFile};
 				
 				
@@ -715,7 +719,7 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 				{
 					
 					//02-22 12:37:39.319: V/MJPEGCamera(4269): ***frame=  128 fps= 16 q=2.0 Lsize=     505kB time=4.27 bitrate= 969.1kbits/s    ***
-					
+					/*
 					if(null!=mListener && line.startsWith("frame=")){
 						int fpsIdx = line.indexOf("fps=");
 						if(fpsIdx != -1){
@@ -727,8 +731,8 @@ public class MJPEGCamera implements SurfaceHolder.Callback, Camera.PreviewCallba
 							Log.v(LOGTAG,"***"+line+"***");
 						}
 					}
-					
-					//Log.v(LOGTAG,"***"+line+"***");
+					*/
+					Log.v(LOGTAG,"***"+line+"***");
 				}
 				Log.v(LOGTAG,"***Ending FFMPEG***");
 	
